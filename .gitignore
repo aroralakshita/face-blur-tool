@@ -170,6 +170,7 @@ cython_debug/
 
 # PyCharm
 .idea/
+plans/
 
 # Abstra
 # Abstra is an AI-powered process automation framework.
