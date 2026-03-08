@@ -17,10 +17,8 @@ for the real-time identity protection use case.
 """
 
 import os
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
-import cv2
 import mediapipe as mp
 import numpy as np
 
@@ -29,32 +27,6 @@ from detectors.base_detector import BaseDetector
 
 # Model file path (relative to this file)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'blaze_face_short_range.tflite')
-
-
-@dataclass
-class BoundingBox:
-    """Represents a bounding box around a detected face.
-    
-    Attributes:
-        x: Top-left x coordinate in pixels
-        y: Top-left y coordinate in pixels
-        width: Width of the bounding box in pixels
-        height: Height of the bounding box in pixels
-        confidence: Detection confidence score (0-1)
-    """
-    x: int
-    y: int
-    width: int
-    height: int
-    confidence: float
-    
-    def to_tuple(self) -> tuple:
-        """Convert to tuple format (x, y, width, height)."""
-        return (self.x, self.y, self.width, self.height)
-    
-    def to_roi(self) -> tuple:
-        """Convert to ROI format (x1, y1, x2, y2)."""
-        return (self.x, self.y, self.x + self.width, self.y + self.height)
 
 
 class FaceDetector(BaseDetector):
@@ -95,18 +67,24 @@ class FaceDetector(BaseDetector):
         # Create detector
         self._detector = self._FaceDetector.create_from_options(options)
     
-    def detect(self, frame: np.ndarray) -> List[BoundingBox]:
-        """Detect faces in a frame.
-        
+    def detect(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """Detect faces in a single frame.
+
+        Converts BGR frame to RGB, runs detection, then returns results
+        as (x, y, w, h) tuples in pixel coordinates.
+
         Args:
-            frame: BGR image as numpy array
-            
+            frame: BGR image as numpy array (standard OpenCV format)
+
         Returns:
-            List of BoundingBox objects for each detected face
+            List of (x, y, w, h) bounding boxes in pixel coordinates.
+            Returns empty list if no faces detected or frame is invalid.
         """
+
         if frame is None or frame.size == 0:
             return []
         
+        frame_height, frame_width = frame.shape[:2]
         # Performance: BGR to RGB using numpy slicing. Faster than cv2.cvtColor for real-time processing
         rgb_frame = frame[:, :, ::-1]
         
@@ -117,37 +95,25 @@ class FaceDetector(BaseDetector):
         results = self._detector.detect(mp_image)
         
         boxes = []
-        if results.detections:
-            frame_height, frame_width = frame.shape[:2]
-            
-            for detection in results.detections:
-                # Extract bounding box (now in absolute coordinates)
-                bbox = detection.bounding_box
+        for detection in results.detections:
+            bbox = detection.bounding_box
                 
-                # Get coordinates
-                x = int(bbox.origin_x)
-                y = int(bbox.origin_y)
-                width = int(bbox.width)
-                height = int(bbox.height)
+            # Get coordinates
+            x = int(bbox.origin_x)
+            y = int(bbox.origin_y)
+            w = int(bbox.width)
+            h = int(bbox.height)
                 
-                # Get confidence score
-                confidence = detection.categories[0].score if detection.categories else 0.0
+            # Get confidence score
+            confidence = detection.categories[0].score if detection.categories else 0.0
                 
-                # Clamp to frame bounds
-                x = max(0, x)
-                y = max(0, y)
-                width = min(width, frame_width - x)
-                height = min(height, frame_height - y)
+            # Clamp to frame bounds
+            x = max(0, x)
+            y = max(0, y)
+            w = min(w, frame_width - x)
+            h = min(h, frame_height - y)
                 
-                # Create bounding box
-                box = BoundingBox(
-                    x=x,
-                    y=y,
-                    width=width,
-                    height=height,
-                    confidence=confidence
-                )
-                boxes.append(box)
+            boxes.append((x, y, w, h))
         
         return boxes
     
