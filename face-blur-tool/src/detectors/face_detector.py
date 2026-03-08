@@ -107,8 +107,8 @@ class FaceDetector(BaseDetector):
         if frame is None or frame.size == 0:
             return []
         
-        # Convert BGR to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Performance: BGR to RGB using numpy slicing. Faster than cv2.cvtColor for real-time processing
+        rgb_frame = frame[:, :, ::-1]
         
         # Convert to MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
