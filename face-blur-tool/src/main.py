@@ -128,32 +128,9 @@ class FaceBlurApplication:
                 if not ret:
                     logger.warning("End of stream or failed to read frame from webcam")
                     break
-                
-                # Update FPS counter
-                self.fps_counter.tick()
-                
-                # Determine if we should perform detection
-                is_detecting = self.tracker.should_detect(self._frame_count)
-                
-                # Face detection/tracking
-                if is_detecting:
-                    boxes = self.detector.detect(frame)
-                    self.tracker.update(boxes, self._frame_count)
-                else:
-                    boxes = self.tracker.get_tracked()
-                
-                # Apply blur to detected faces
-                frame = self.blur_filter.apply_blur(frame, boxes)
-                
-                # Render overlays
-                frame = self.overlay.render_all(
-                    frame,
-                    self.fps_counter.get_display_text(),
-                    len(boxes),
-                    is_detecting
-                )
-                
-                # Display the frame
+
+                frame = self._process_frame(frame)
+                            
                 cv2.imshow(self.config.WINDOW_NAME, frame)
                 
                 # Handle key events
@@ -168,6 +145,39 @@ class FaceBlurApplication:
         
         finally:
             self.cleanup()
+
+    def _process_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Process a single frame through the full pipeline.
+
+        Separated from the main loop so benchmark mode can reuse it.
+        This is the core pipeline:
+            capture → detect/track → blur → overlay
+
+        Args:
+            frame: Raw BGR frame from capture device
+
+        Returns:
+            Processed frame with faces blurred and overlays rendered
+        """
+        self.fps_counter.tick()
+
+        is_detecting = self.tracker.should_detect(self._frame_count)
+
+        if is_detecting:
+            boxes = self.detector.detect(frame)
+            self.tracker.update(boxes, self._frame_count)
+        else:
+            boxes = self.tracker.get_tracked()
+
+        frame = self.blur_filter.apply_blur(frame, boxes)
+        frame = self.overlay.render_all(
+            frame,
+            self.fps_counter.get_display_text(),
+            len(boxes),
+            is_detecting
+        )
+
+        return frame
     
     def cleanup(self) -> None:
         """Clean up resources."""
