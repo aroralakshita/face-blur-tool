@@ -1,8 +1,19 @@
 """
-Face detection module using MediaPipe Tasks API.
+MediaPipe Tasks API face detector implementation.
 
-This module provides a wrapper around MediaPipe's face detection API
-for detecting faces in video frames.
+Implements the BaseDetector interface using MediaPipe's Tasks API
+
+MediaPipe was chosen over heavier CNN models (MTCNN, RetinaFace)
+because it runs efficiently on CPU, which is important for real-time webcam
+use without requiring a GPU.
+
+Requires the TFLite model file:
+    src/blaze_face_short_range.tflite
+Download from: https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite
+
+Tradeoff: MediaPipe is fast and lightweight but less accurate than
+heavier models in challenging lighting or extreme angles. Acceptable
+for the real-time identity protection use case.
 """
 
 import os
@@ -12,6 +23,8 @@ from typing import List, Optional
 import cv2
 import mediapipe as mp
 import numpy as np
+
+from detectors.base_detector import BaseDetector
 
 
 # Model file path (relative to this file)
@@ -44,15 +57,17 @@ class BoundingBox:
         return (self.x, self.y, self.x + self.width, self.y + self.height)
 
 
-class FaceDetector:
+class FaceDetector(BaseDetector):
     """Face detector using MediaPipe Tasks API.
-    
-    This class wraps MediaPipe's face detection functionality and provides
-    a simple interface for detecting faces in video frames.
-    
-    Attributes:
-        detection_confidence: Minimum confidence for detection
-        model_path: Path to the TFLite model file
+
+    Inherits from BaseDetector, fulfilling the interface contract that
+    main.py and the rest of the pipeline depend on. The pipeline only
+    calls .detect() and .close() — it has no knowledge of MediaPipe.
+
+    Args:
+        detection_confidence: Minimum confidence threshold (0.0-1.0).
+            Lower values detect more faces but increase false positives.
+        model_path: Path to the TFLite model file (uses default if None).
     """
     
     def __init__(
@@ -60,12 +75,7 @@ class FaceDetector:
         detection_confidence: float = 0.5,
         model_path: Optional[str] = None
     ):
-        """Initialize the face detector.
         
-        Args:
-            detection_confidence: Minimum confidence threshold for detections
-            model_path: Path to the TFLite model file (uses default if None)
-        """
         self.detection_confidence = detection_confidence
         self.model_path = model_path or os.path.abspath(MODEL_PATH)
         
