@@ -7,6 +7,7 @@ pipeline for real-time identity protection.
 
 import sys
 import cv2
+import logging
 import numpy as np
 
 from config import Config
@@ -16,6 +17,16 @@ from filters.blur_filter import BlurFilter
 from utils.fps_counter import FPSCounter
 from utils.overlay import OverlayRenderer
 
+
+# Using logging instead of print() throughout because:
+# - Log levels (INFO, WARNING, ERROR) make severity explicit
+# - Can redirect to file without changing code
+# - Can suppress INFO in production by changing log level
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 class FaceBlurApplication:
     """Main application class for the Face Blur Tool.
@@ -81,7 +92,7 @@ class FaceBlurApplication:
         self._cap = cv2.VideoCapture(self.config.CAMERA_INDEX)
         
         if not self._cap.isOpened():
-            print("Error: Could not open webcam.")
+            logger.error("Could not open webcam")
             return False
         
         # Set camera properties
@@ -115,8 +126,8 @@ class FaceBlurApplication:
                 # Capture frame
                 ret, frame = self._cap.read()
                 if not ret:
-                    print("Warning: Failed to read frame from webcam")
-                    continue
+                    logger.warning("End of stream or failed to read frame from webcam")
+                    break
                 
                 # Update FPS counter
                 self.fps_counter.tick()
@@ -153,14 +164,14 @@ class FaceBlurApplication:
                 self._frame_count += 1
         
         except KeyboardInterrupt:
-            print("\nInterrupted by user")
+            logger.info("Interrupted by user")
         
         finally:
             self.cleanup()
     
     def cleanup(self) -> None:
         """Clean up resources."""
-        print("Cleaning up...")
+        logger.info("Cleaning up...")
         
         # Release detector resources
         self.detector.close()
@@ -172,7 +183,7 @@ class FaceBlurApplication:
         # Close all OpenCV windows
         cv2.destroyAllWindows()
         
-        print("Cleanup complete")
+        logger.info("Cleanup complete")
 
 
 def main():
