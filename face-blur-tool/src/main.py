@@ -3,10 +3,21 @@ Main application entry point for the Face Blur Tool.
 
 This module orchestrates the face detection, tracking, and blurring
 pipeline for real-time identity protection.
+
+CLI Usage:
+    python main.py                          # webcam with defaults
+    python main.py --input video.mp4        # process a video file
+    python main.py --output out.mp4         # save output to file
+    python main.py --confidence 0.6         # stricter detection
+    python main.py --blur 101               # lighter blur
+    python main.py --interval 3             # detect every 3 frames
+    python main.py --benchmark              # run benchmark mode (300 frames)
+    python main.py --benchmark --frames 500 # benchmark with custom frame count
 """
 
 import sys
 import cv2
+import argparse
 import logging
 import numpy as np
 
@@ -28,6 +39,104 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    CLI args override config.py defaults at runtime. This lets config.py
+    remain stable in version control while allowing flexible usage.
+
+    Returns:
+        Parsed argument namespace
+    """
+    parser = argparse.ArgumentParser(
+        description="Face Blur Tool — real-time identity protection",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter  # shows defaults in --help
+    )
+
+    # Input/output
+    parser.add_argument(
+        "--input",
+        type=str,
+        default=None,
+        help="Input source. Omit for webcam, or pass path to video file."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to save processed video (e.g. output.mp4)"
+    )
+
+    # Detection settings
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=None,
+        help="Minimum detection confidence (0.0–1.0). Lower = more detections, more false positives."
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=None,
+        help="Frames between full detections. Lower = more accurate, higher CPU usage."
+    )
+
+    # Blur settings
+    parser.add_argument(
+        "--blur",
+        type=int,
+        default=None,
+        help="Blur kernel size (must be odd number). Higher = stronger blur."
+    )
+
+    # Benchmark mode
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Run benchmark mode: measures FPS over N frames then exits."
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=300,
+        help="Number of frames to run in benchmark mode."
+    )
+
+    return parser.parse_args()
+
+def apply_cli_overrides(config: Config, args: argparse.Namespace) -> Config:
+    """Apply CLI argument overrides to config object.
+
+    Config.py holds stable defaults. CLI args are runtime overrides.
+    We only override fields where the user explicitly passed a value.
+
+    Args:
+        config: Default configuration object
+        args: Parsed CLI arguments
+
+    Returns:
+        Modified config with overrides applied
+    """
+    if args.confidence is not None:
+        logger.info(f"Overriding confidence: {config.DETECTION_CONFIDENCE} → {args.confidence}")
+        config.DETECTION_CONFIDENCE = args.confidence
+
+    if args.interval is not None:
+        logger.info(f"Overriding detection interval: {config.DETECTION_INTERVAL} → {args.interval}")
+        config.DETECTION_INTERVAL = args.interval
+
+    if args.blur is not None:
+        # Enforce odd number requirement for Gaussian kernel
+        blur = args.blur if args.blur % 2 == 1 else args.blur + 1
+        if blur != args.blur:
+            logger.warning(f"Blur kernel must be odd. Adjusted {args.blur} → {blur}")
+        logger.info(f"Overriding blur strength: {config.BLUR_STRENGTH} → {blur}")
+        config.BLUR_STRENGTH = blur
+
+    return config
+
+
 class FaceBlurApplication:
     """Main application class for the Face Blur Tool.
     
@@ -43,13 +152,10 @@ class FaceBlurApplication:
         overlay: Overlay renderer
     """
     
-    def __init__(self, config: Config = None):
-        """Initialize the application.
-        
-        Args:
-            config: Application configuration (uses default if None)
-        """
+    def __init__(self, config: Config = None, args: argparse.Namespace = None):
+
         self.config = config or Config()
+        self.args = args
         
         # Initialize components
         self.detector = FaceDetector(
@@ -81,35 +187,57 @@ class FaceBlurApplication:
         self._running = False
         self._frame_count = 0
         self._cap = None
+        self.writer = None
     
     def initialize(self) -> bool:
-        """Initialize the webcam capture.
+        """Initialize video capture and optional output writer.
         
+        Supports both webcam (default) and video file input via --input.
+
         Returns:
             True if initialization successful, False otherwise
         """
-        # Initialize webcam
-        self._cap = cv2.VideoCapture(self.config.CAMERA_INDEX)
+        #Determine input source
+        #Integer index = webcam, string path = video file
+        if self.args and self.args.input:
+            source = self.args.input
+            logger.info(f"Input: video file '{source}'")
+        else:
+            source = self.config.CAMERA_INDEX
+            logger.info(f"Input: webcam index {source}")
+        
+        self._cap = cv2.VideoCapture(source)
         
         if not self._cap.isOpened():
-            logger.error("Could not open webcam")
+            logger.error(f"Could not open inout source: {source}")
             return False
         
-        # Set camera properties
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.CAMERA_WIDTH)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.CAMERA_HEIGHT)
-        self._cap.set(cv2.CAP_PROP_FPS, self.config.CAMERA_FPS)
+        # Only set camera properties for webcam (int source)
+        # For video files these would be ignored anyway
+        if isinstance(source, int):
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.CAMERA_WIDTH)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.CAMERA_HEIGHT)
+            self._cap.set(cv2.CAP_PROP_FPS, self.config.CAMERA_FPS)
         
-        # Create display window
-        cv2.namedWindow(self.config.WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(
-            self.config.WINDOW_NAME,
-            self.config.WINDOW_WIDTH,
-            self.config.WINDOW_HEIGHT
+        # Set up output writer if --output was specified
+        if self.args and self.args.output:
+            width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = self._cap.get(cv2.CAP_PROP_FPS) or 30
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self._writer = cv2.VideoWriter(self.args.output, fourcc, fps, (width, height))
+            logger.info(f"Output: saving to '{self.args.output}' at {width}x{height} {fps:.0f}fps")
+        
+        # Create display window (skip in benchmark mode for clean output)
+        if not (self.args and self.args.benchmark):
+            cv2.namedWindow(self.config.WINDOW_NAME, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(
+                self.config.WINDOW_NAME,
+                self.config.WINDOW_WIDTH,
+                self.config.WINDOW_HEIGHT
         )
         
-        print(f"Initialized webcam: {self.config.CAMERA_WIDTH}x{self.config.CAMERA_HEIGHT}")
-        print(f"Press ESC or 'q' to exit")
+        logger.info(f"Press ESC or 'q' to exit")
         
         return True
     
@@ -190,6 +318,10 @@ class FaceBlurApplication:
         if self._cap is not None:
             self._cap.release()
         
+        if self._writer is not None:
+            self._writer.release()
+            logger.info("Output video saved")
+        
         # Close all OpenCV windows
         cv2.destroyAllWindows()
         
@@ -202,7 +334,11 @@ def main():
     print("Face Blur Tool - Identity Protection")
     print("=" * 50)
     
-    app = FaceBlurApplication()
+    args = parse_args
+    config = Config()
+    config = apply_cli_overrides(config, args)
+
+    app = FaceBlurApplication(config=config, args=args)
     app.run()
     
     print("Application terminated")
