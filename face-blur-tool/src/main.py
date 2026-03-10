@@ -382,7 +382,7 @@ def main():
     print("Face Blur Tool - Identity Protection")
     print("=" * 50)
     
-    args = parse_args
+    args = parse_args()
     config = Config()
     config = apply_cli_overrides(config, args)
 
