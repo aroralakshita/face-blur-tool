@@ -1,42 +1,49 @@
 """
 Face tracking module for smooth face tracking across frames.
 
-This module provides functionality to track detected faces across frames,
-reducing the need for full detection on every frame and providing
-smoother bounding box transitions.
+Tracks detected faces between full detection runs using IoU (Intersection
+over Union) matching. This is what allows the tool to run at real-time
+speeds. Full MediaPipe detection only runs every N frames, and this
+module fills the gaps by matching existing face positions to new frames.
+
+IoU measures bounding box overlap (0.0 = no overlap, 1.0 = identical).
+If two boxes overlap above the threshold (0.3), they're considered the
+same face. No re-detection needed.
+
+All boxes are plain (x, y, w, h) tuples
 """
 
-from typing import List, Optional
 from dataclasses import dataclass
 
-from detectors.face_detector import BoundingBox
+
+Box = tuple[int, int, int, int]
 
 
 @dataclass
 class TrackedFace:
-    """Represents a tracked face with smoothing.
+    """Represents a tracked face between detection runs.
     
     Attributes:
-        box: Current smoothed bounding box
-        original_box: Last detected bounding box
+        box: Current smoothed bounding box as (x, y, w, h)
         frames_since_detection: Frames since last detection update
     """
-    box: BoundingBox
-    original_box: BoundingBox
+    box: Box
     frames_since_detection: int = 0
 
 
 class FaceTracker:
-    """Tracks faces across frames with temporal smoothing.
+    """Tracks faces across frames with IoU matching temporal smoothing.
     
-    This class maintains face positions across frames and applies
+    Between full detection runs, this class maintains face positions across frames and applies
     smoothing to reduce jitter. It also determines when re-detection
     is needed.
     
     Attributes:
-        smoothing_factor: Factor for temporal smoothing (0-1)
+        smoothing_factor: Controls how much the box moves per frame (0.0-1.0)
                           Higher values = more smoothing (slower response)
-        detection_interval: Number of frames between full detections
+                          Default 0.3 gives a responsive but stable result
+        detection_interval: Number of frames between full detections. Tracked faces
+        that go unmatched for 2x this value are dropped
     """
     
     def __init__(
@@ -44,31 +51,26 @@ class FaceTracker:
         smoothing_factor: float = 0.3,
         detection_interval: int = 5
     ):
-        """Initialize the face tracker.
-        
-        Args:
-            smoothing_factor: Smoothing factor for bounding box (0-1)
-                             0 = no smoothing, 1 = maximum smoothing
-            detection_interval: Frames between full detections
-        """
+
         self.smoothing_factor = smoothing_factor
         self.detection_interval = detection_interval
         
-        self._tracked_faces: List[TrackedFace] = []
+        self._tracked_faces: list[TrackedFace] = []
         self._last_detection_frame = 0
     
     def update(
         self,
-        new_boxes: List[BoundingBox],
+        new_boxes: list[Box],
         frame_count: int
     ) -> None:
         """Update tracked faces with new detections.
         
-        This method matches new detections to existing tracked faces
-        and applies smoothing to bounding box positions.
+        This method matches new detections to existing tracked faces via IoU
+        and applies smoothing to matched faces, expires unmatched ones,
+        and adds any newly detected faces
         
         Args:
-            new_boxes: Newly detected bounding boxes
+            new_boxes: List of (x, y, w, h) detected tuples
             frame_count: Current frame number
         """
         self._last_detection_frame = frame_count
@@ -87,16 +89,11 @@ class FaceTracker:
         
         if not self._tracked_faces:
             # No existing tracked faces - add all new detections
-            for box in new_boxes:
-                self._tracked_faces.append(TrackedFace(
-                    box=box,
-                    original_box=box,
-                    frames_since_detection=0
-                ))
+            self._tracked_faces = [TrackedFace(box=box) for box in new_boxes]
             return
         
         # Match new boxes to existing tracked faces
-        matched_indices = set()
+        matched_tracked = set()
         new_matched = set()
         
         # Simple matching based on IoU (Intersection over Union)
@@ -114,37 +111,28 @@ class FaceTracker:
                     best_match_idx = j
             
             if best_match_idx >= 0:
-                # Update tracked face with smoothed position
-                new_box = new_boxes[best_match_idx]
-                smoothed_box = self._smooth_box(tracked.box, new_box)
-                
-                tracked.box = smoothed_box
-                tracked.original_box = new_box
-                tracked.frames_since_detection = 0
-                
-                matched_indices.add(i)
-                new_matched.add(best_match_idx)
+               tracked.box = self._smooth_box(tracked.box, new_boxes[best_match_idx])
+               tracked.frames_since_detection = 0
+               
+               matched_tracked.add(i)
+               new_matched.add(best_match_idx)
         
         # Remove unmatched tracked faces
         self._tracked_faces = [
             t for i, t in enumerate(self._tracked_faces)
-            if i in matched_indices or t.frames_since_detection < self.detection_interval
+            if i in matched_tracked or t.frames_since_detection < self.detection_interval
         ]
         
         # Add new unmatched detections
         for j, new_box in enumerate(new_boxes):
             if j not in new_matched:
-                self._tracked_faces.append(TrackedFace(
-                    box=new_box,
-                    original_box=new_box,
-                    frames_since_detection=0
-                ))
+                self._tracked_faces.append(TrackedFace(box=new_box))
     
-    def get_tracked(self) -> List[BoundingBox]:
-        """Get currently tracked face bounding boxes.
+    def get_tracked(self) -> list[Box]:
+        """Get currently tracked face positions.
         
         Returns:
-            List of smoothed bounding boxes for tracked faces
+            List of (x, y, w, h) tuples
         """
         return [tracked.box for tracked in self._tracked_faces]
     
@@ -167,57 +155,68 @@ class FaceTracker:
     
     def _smooth_box(
         self,
-        old_box: BoundingBox,
-        new_box: BoundingBox
-    ) -> BoundingBox:
-        """Apply temporal smoothing to bounding box.
+        old_box: Box,
+        new_box: Box
+    ) -> Box:
+        """Apply exponential moving average smoothing to bounding box.
+        
+        Blends the previous position with the new detection using teh
+        smoothing factor as the weight on teh old position
+
+        Formula: smoothed = (old * alpha) + (new * (1 - aplha))
         
         Args:
-            old_box: Previous smoothed bounding box
-            new_box: New detected bounding box
+            old_box: Previous smoothed position (x, y, w, h)
+            new_box: New detected position (x, y, w, h)
             
         Returns:
-            Smoothed bounding box
+            Smoothed (x, y, w, h) tuple
         """
         # Exponential moving average smoothing
         alpha = self.smoothing_factor
+        ox, oy, ow, oh = old_box
+        nx, ny, nw, nh = new_box
         
-        return BoundingBox(
-            x=int(old_box.x * alpha + new_box.x * (1 - alpha)),
-            y=int(old_box.y * alpha + new_box.y * (1 - alpha)),
-            width=int(old_box.width * alpha + new_box.width * (1 - alpha)),
-            height=int(old_box.height * alpha + new_box.height * (1 - alpha)),
-            confidence=new_box.confidence
+        return (
+            int(ox * alpha + nx * (1 - alpha)),
+            int(oy * alpha + ny * (1 - alpha)),
+            int(ow * alpha + nw * (1 - alpha)),
+            int(oh * alpha + nh * (1 - alpha)),
         )
     
     def _calculate_iou(
         self,
-        box1: BoundingBox,
-        box2: BoundingBox
+        box1: Box,
+        box2: Box
     ) -> float:
-        """Calculate Intersection over Union between two boxes.
+        """Calculate Intersection over Union between two bounding boxes.
         
+        IoU = intersection area / union area
+        Returns 0.0 if boxes don't overlap
         Args:
-            box1: First bounding box
-            box2: Second bounding box
+            box1: First box (x, y, w, h)
+            box2: Second box as (x, y, w, h)
             
         Returns:
-            IoU score (0-1)
+            IoU score (0.0-1.0)
         """
-        # Calculate intersection coordinates
-        x1 = max(box1.x, box2.x)
-        y1 = max(box1.y, box2.y)
-        x2 = min(box1.x + box1.width, box2.x + box2.width)
-        y2 = min(box1.y + box1.height, box2.y + box2.height)
+        x1, y1, w1, h1 = box1
+        x2, y2, w2, h2 = box2
+
+        # Calculate intersection rectangle
+        ix1 = max(x1, x2)
+        iy1 = max(y1, y2)
+        ix2 = min(x1 + w1, x2 + w2)
+        iy2 = min(y1 + h1, y2 + h2)
         
         # Check if boxes overlap
-        if x2 <= x1 or y2 <= y1:
+        if ix2 <= ix1 or iy2 <= iy1:
             return 0.0
         
         # Calculate areas
-        intersection = (x2 - x1) * (y2 - y1)
-        area1 = box1.width * box1.height
-        area2 = box2.width * box2.height
+        intersection = (ix2 - ix1) * (iy2 - iy1)
+        area1 = w1 * h1
+        area2 = w2 * h2
         union = area1 + area2 - intersection
         
         return intersection / union if union > 0 else 0.0

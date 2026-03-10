@@ -1,26 +1,24 @@
 """
 Blur filter module for face anonymization.
 
-This module provides functionality to apply pixel blur effects
-to detected face regions for identity protection.
+Applies Gaussian blur to detected face regions for identity protection.
+Accepts boxes as plain (x, y, w, h) tuples
 """
-
-from typing import List, Tuple
 
 import cv2
 import numpy as np
 
-from detectors.face_detector import BoundingBox
 
 
 class BlurFilter:
-    """Applies blur effect to face regions.
+    """Applies Gaussian blur to face regions.
     
     This class handles the blurring of detected face regions in frames,
     including bounding box expansion and ROI validation.
     
     Attributes:
-        kernel_size: Size of the Gaussian blur kernel (must be odd)
+        kernel_size: Size of the Gaussian blur kernel (must be odd, larger = more blur).
+            Auto-corrected to the next odd number if an even value is passed.
         expansion: Pixels to expand bounding box around face
     """
     
@@ -29,12 +27,7 @@ class BlurFilter:
         kernel_size: int = 51,
         expansion: int = 15
     ):
-        """Initialize the blur filter.
-        
-        Args:
-            kernel_size: Size of Gaussian blur kernel (must be odd, larger = more blur)
-            expansion: Pixels to expand bounding box around face
-        """
+
         # Ensure kernel size is odd and positive
         if kernel_size % 2 == 0:
             kernel_size += 1
@@ -44,13 +37,13 @@ class BlurFilter:
     def apply_blur(
         self,
         frame: np.ndarray,
-        boxes: List[BoundingBox]
+        boxes: list[tuple[int, int, int, int]]
     ) -> np.ndarray:
         """Apply blur to all detected face regions.
         
         Args:
-            frame: Input BGR image
-            boxes: List of bounding boxes for faces
+            frame: Input BGR image as numpy array
+            boxes: List of (x, y, w, h) bounding boxes
             
         Returns:
             Frame with blurred face regions
@@ -69,27 +62,24 @@ class BlurFilter:
     def _blur_region(
         self,
         frame: np.ndarray,
-        box: BoundingBox
+        box: tuple[int, int, int, int]
     ) -> np.ndarray:
         """Blur a single face region.
+
+        Expands the box, clamps to frame bounds, extracts the ROI,
+        applies Gaussian blur, and writes it back in place
         
         Args:
             frame: Input BGR image
-            box: Bounding box for the face
+            box: (x, y, w, h) ounding box
             
         Returns:
             Frame with the face region blurred
         """
-        frame_height, frame_width = frame.shape[:2]
+        frame_h, frame_w = frame.shape[:2]
         
-        # Expand the bounding box
-        expanded_box = self._expand_box(box, frame_width, frame_height)
-        
-        # Extract ROI coordinates
-        x1, y1, x2, y2 = expanded_box
-        
-        # Validate ROI is within frame bounds
-        x1, y1, x2, y2 = self._validate_roi(x1, y1, x2, y2, frame_width, frame_height)
+        x1, y1, x2, y2 = self._expand_box(box, frame_w, frame_h)
+        x1, y1, x2, y2 = self._clamp_roi(x1, y1, x2, y2, frame_w, frame_h)
         
         # Check if ROI is valid
         if x2 <= x1 or y2 <= y1:
@@ -108,50 +98,55 @@ class BlurFilter:
     
     def _expand_box(
         self,
-        box: BoundingBox,
-        frame_width: int,
-        frame_height: int
-    ) -> Tuple[int, int, int, int]:
+        box: tuple[int, int, int, int],
+        frame_w: int,
+        frame_h: int
+    ) -> tuple[int, int, int, int]:
         """Expand bounding box by the expansion margin.
         
+        Converts from (x, y, w, h) to (x1, y1, x2, y2) and expands
+        outwards on all sides. Clamped to frame bounds
+        
         Args:
-            box: Original bounding box
-            frame_width: Width of the frame
-            frame_height: Height of the frame
+            box: (x, y, w, h) bounding box
+            frame_w: Width of the frame
+            frame_h: Height of the frame
             
         Returns:
-            Tuple of (x1, y1, x2, y2) for expanded box
+            Expanded (x1, y1, x2, y2) coordinates
         """
-        x1 = max(0, box.x - self.expansion)
-        y1 = max(0, box.y - self.expansion)
-        x2 = min(frame_width, box.x + box.width + self.expansion)
-        y2 = min(frame_height, box.y + box.height + self.expansion)
+        x, y, w, h = box
+
+        x1 = max(0, x - self.expansion)
+        y1 = max(0, y - self.expansion)
+        x2 = min(frame_w, x + w + self.expansion)
+        y2 = min(frame_h, y + h + self.expansion)
         
-        return (x1, y1, x2, y2)
+        return x1, y1, x2, y2
     
-    def _validate_roi(
+    def _clamp_roi(
         self,
         x1: int,
         y1: int,
         x2: int,
         y2: int,
-        frame_width: int,
-        frame_height: int
-    ) -> Tuple[int, int, int, int]:
-        """Validate and clamp ROI coordinates to frame bounds.
+        frame_w: int,
+        frame_h: int
+    ) -> tuple[int, int, int, int]:
+        """Clamp ROI coordinates to frame bounds.
         
         Args:
             x1, y1, x2, y2: ROI coordinates
-            frame_width: Width of the frame
-            frame_height: Height of the frame
+            frame_w: Width of the frame
+            frame_h: Height of the frame
             
         Returns:
             Clamped ROI coordinates
         """
-        x1 = max(0, min(x1, frame_width))
-        y1 = max(0, min(y1, frame_height))
-        x2 = max(0, min(x2, frame_width))
-        y2 = max(0, min(y2, frame_height))
+        x1 = max(0, min(x1, frame_w))
+        y1 = max(0, min(y1, frame_h))
+        x2 = max(0, min(x2, frame_w))
+        y2 = max(0, min(y2, frame_h))
         
         return (x1, y1, x2, y2)
     
@@ -169,6 +164,6 @@ class BlurFilter:
         """Set the bounding box expansion margin.
         
         Args:
-            expansion: New expansion margin in pixels
+            expansion: New expansion margin in pixels. Clamped to minimum 0
         """
         self.expansion = max(0, expansion)

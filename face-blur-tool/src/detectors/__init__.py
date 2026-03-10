@@ -1,4 +1,4 @@
 """Face detection modules."""
-from .face_detector import FaceDetector, BoundingBox
+from .face_detector import FaceDetector
 
-__all__ = ['FaceDetector', 'BoundingBox']
+__all__ = ['FaceDetector']
