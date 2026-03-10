@@ -27,6 +27,7 @@ from trackers.face_tracker import FaceTracker
 from filters.blur_filter import BlurFilter
 from utils.fps_counter import FPSCounter
 from utils.overlay import OverlayRenderer
+from utils.benchmark import BenchmarkRecorder
 
 
 # Using logging instead of print() throughout because:
@@ -246,6 +247,10 @@ class FaceBlurApplication:
         if not self.initialize():
             return
         
+        if self.args and self.args.benchmark:
+            self._run_benchmark(self.args.frames)
+            return
+        
         self._running = True
         self._frame_count = 0
         
@@ -306,6 +311,49 @@ class FaceBlurApplication:
         )
 
         return frame
+    
+    def _run_benchmark(self, num_frames: int) -> None:
+        """Run benchmark mode: process N frames and report performance stats.
+
+        Benchmark mode skips the display window and key handling to measure
+        raw pipeline performance. Results are printed to stdout in a format
+        suitable for documentation.
+
+        Args:
+            num_frames: Number of frames to process
+        """
+        logger.info(f"Starting benchmark: {num_frames} frames")
+
+        # Get actual capture resolution (may differ from config if using video file)
+        width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        resolution = f"{width}x{height}"
+
+        recorder = BenchmarkRecorder()
+
+        try:
+            for i in range(num_frames):
+                ret, frame = self._cap.read()
+                if not ret:
+                    logger.warning(f"Stream ended early at frame {i}")
+                    break
+
+                self.fps_counter.tick()
+                self._process_frame(frame)
+
+                current_fps = self.fps_counter.get_fps()
+                if current_fps > 0:
+                    recorder.record(current_fps)
+
+                # Progress indicator every 50 frames
+                if (i + 1) % 50 == 0:
+                    logger.info(f"  {i + 1}/{num_frames} frames processed...")
+
+        finally:
+            self.cleanup()
+
+        # Print results
+        recorder.print_results(resolution)
     
     def cleanup(self) -> None:
         """Clean up resources."""
