@@ -188,7 +188,7 @@ class FaceBlurApplication:
         self._running = False
         self._frame_count = 0
         self._cap = None
-        self.writer = None
+        self._writer = None
     
     def initialize(self) -> bool:
         """Initialize video capture and optional output writer.
@@ -210,7 +210,7 @@ class FaceBlurApplication:
         self._cap = cv2.VideoCapture(source)
         
         if not self._cap.isOpened():
-            logger.error(f"Could not open inout source: {source}")
+            logger.error(f"Could not open input source: {source}")
             return False
         
         # Only set camera properties for webcam (int source)
@@ -338,8 +338,8 @@ class FaceBlurApplication:
                     logger.warning(f"Stream ended early at frame {i}")
                     break
 
-                self.fps_counter.tick()
                 self._process_frame(frame)
+                self._frame_count += 1 
 
                 current_fps = self.fps_counter.get_fps()
                 if current_fps > 0:
